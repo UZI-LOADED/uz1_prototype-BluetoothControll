@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/script_injector_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <EditText
+        android:id="@+id/script_input"
+        android:layout_width="match_parent"
+        android:layout_height="150dp"
+        android:hint="Enter your Bluetooth script commands here"
+        android:gravity="top|start"
+        android:inputType="textMultiLine"
+        android:background="@android:drawable/editbox_background"
+        android:textColor="#00FF00"
+        android:textSize="14sp"
+        android:fontFamily="monospace" />
+
+    <Button
+        android:id="@+id/send_button"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Send Script"
+        android:layout_marginTop="8dp" />
+
+    <Switch
+        android:id="@+id/auto_replay_switch"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Auto Replay"
+        android:layout_marginTop="8dp" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/log_recycler_view"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="#001100"
+        android:padding="8dp" />
+
+</LinearLayout>
